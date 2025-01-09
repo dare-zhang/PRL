@@ -1,0 +1,145 @@
+clc;
+clear all;
+
+% Step 1: Read data from a table file without column names
+filename = 'data1.xlsx';  % File name
+dataTable = readtable(filename, 'ReadVariableNames', false);  % Assuming no column names
+
+% Step 2: Extract columns from the table as vectors
+Rel = dataTable{:, 1};
+Reg = dataTable{:, 2};
+Ca = dataTable{:, 3};
+breakLabel = dataTable{:, 4};
+
+% Ensure the input data is of type double
+Rel = double(Rel);
+Reg = double(Reg);
+Ca = double(Ca);
+breakLabel = double(breakLabel);
+
+% Step 3: Define parameter search range
+lb = [-1, -1, -1, -1, -1, -1, -1];  % Lower bounds
+ub = [1, 1, 1, 1, 1, 1, 1];         % Upper bounds
+nVars = 7;  % Number of optimization parameters
+Max_iter = 2000;  % Maximum number of iterations
+
+% Enable multi-threading to accelerate computation
+if isempty(gcp('nocreate'))
+    parpool('local', 6);
+end
+
+% Initialize variables to store the best solutions
+bestAccuracyGA = 0; bestParamsGA = []; bestFormGA = ''; bestPredictionsGA = [];
+bestAccuracyGD = 0; bestParamsGD = []; bestFormGD = ''; bestPredictionsGD = [];
+
+%% Genetic Algorithm (GA)
+disp('Starting Genetic Algorithm (GA)...');
+parfor iter = 1:Max_iter
+    rng(iter);  % Set random seed
+    gaParams = ga(@(params) evaluateModel(params, Rel, Reg, Ca, breakLabel), nVars, [], [], [], [], lb, ub);
+    [form, predictions, r2, accuracy] = evaluateBestForm(gaParams, Rel, Reg, Ca, breakLabel);
+
+    localBestAccuracyGA(iter) = accuracy;
+    localBestParamsGA{iter} = gaParams;
+    localBestFormGA{iter} = form;
+    localBestPredictionsGA{iter} = predictions;
+end
+
+[bestAccuracyGA, bestIndexGA] = max(localBestAccuracyGA);
+bestParamsGA = localBestParamsGA{bestIndexGA};
+bestFormGA = localBestFormGA{bestIndexGA};
+bestPredictionsGA = localBestPredictionsGA{bestIndexGA};
+
+disp('GA Best Parameters:');
+disp(bestParamsGA);
+disp(['GA Best Model: ', bestFormGA]);
+disp(['GA Best Model Prediction Accuracy: ', num2str(bestAccuracyGA * 100), '%']);  % Output the best model prediction accuracy
+
+%% Gradient Descent (GD)
+disp('Starting Gradient Descent (GD)...');
+parfor iter = 1:Max_iter
+    rng(iter + 1000);  % Set a different random seed
+    optionsGD = optimoptions('fminunc', 'Algorithm', 'quasi-newton', 'Display', 'off');
+    gdParams = fminunc(@(params) evaluateModel(params, Rel, Reg, Ca, breakLabel), rand(1, nVars), optionsGD);
+    [form, predictions, r2, accuracy] = evaluateBestForm(gdParams, Rel, Reg, Ca, breakLabel);
+
+    localBestAccuracyGD(iter) = accuracy;
+    localBestParamsGD{iter} = gdParams;
+    localBestFormGD{iter} = form;
+    localBestPredictionsGD{iter} = predictions;
+end
+
+[bestAccuracyGD, bestIndexGD] = max(localBestAccuracyGD);
+bestParamsGD = localBestParamsGD{bestIndexGD};
+bestFormGD = localBestFormGD{bestIndexGD};
+bestPredictionsGD = localBestPredictionsGD{bestIndexGD};
+
+disp('GD Best Parameters:');
+disp(bestParamsGD);
+disp(['GD Best Model: ', bestFormGD]);
+disp(['GD Best Model Prediction Accuracy: ', num2str(bestAccuracyGD * 100), '%']);  % Output the best model prediction accuracy
+
+%% Plot the results
+figure;
+subplot(1,2,1);
+plotResults(breakLabel, bestPredictionsGA, 'GA');
+subplot(1,2,2);
+plotResults(breakLabel, bestPredictionsGD, 'GD');
+
+%% Objective Function
+function error = evaluateModel(params, Rel, Reg, Ca, breakLabel)
+    C1 = params(1);
+    a = params(2);
+    b = params(3);
+    c = params(4);
+    C2 = params(5);
+    C3 = params(6);
+    e = params(7);
+
+    % Define form1
+    form1 = (C1 .* Rel.^a .* Reg.^b + C2 .* Ca.^c + C3) .* Ca.^e;
+    predictions = 1 ./ (1 + exp(-form1));  % Sigmoid
+    epsilon = 1e-9;  % Prevent log(0)
+    error = -mean(breakLabel .* log(predictions + epsilon) + (1 - breakLabel) .* log(1 - predictions + epsilon));
+end
+
+%% Evaluate Best Model
+function [bestForm, bestPredictions, R2, accuracy] = evaluateBestForm(params, Rel, Reg, Ca, breakLabel)
+    C1 = params(1);
+    a = params(2);
+    b = params(3);
+    c = params(4);
+    C2 = params(5);
+    C3 = params(6);
+    e = params(7);
+
+    form1 = (C1 .* Rel.^a .* Reg.^b + C2 .* Ca.^c + C3) .* Ca.^e;
+    bestPredictions = 1 ./ (1 + exp(-form1));  % Sigmoid
+    
+    % Compute R²
+    SS_res = sum((breakLabel - bestPredictions).^2);
+    SS_tot = sum((breakLabel - mean(breakLabel)).^2);
+    R2 = 1 - (SS_res / SS_tot);
+    accuracy = computeAccuracy(bestPredictions, breakLabel);
+    
+    bestForm = 'form1 = (C1 * Rel^a * Reg^b + C2 * Ca^c + C3) * Ca^e';
+end
+
+%% Compute Accuracy
+function accuracy = computeAccuracy(predictions, actual)
+    predictedLabels = predictions >= 0.5;
+    accuracy = sum(predictedLabels == actual) / length(actual);
+end
+
+%% Plot Results
+function plotResults(breakLabel, predictions, methodName)
+    scatter(1:length(breakLabel), breakLabel, 'bo', 'SizeData', 100);
+    hold on;
+    scatter(1:length(predictions), predictions >= 0.5, 'rx', 'SizeData', 100);
+    legend('True Values', 'Predicted Values');
+    xlabel('Sample Number', 'FontSize', 14);
+    ylabel('Bubble Rupture (0=No Rupture, 1=Rupture)', 'FontSize', 14);
+    title([methodName, ' Prediction Results'], 'FontSize', 16);
+    set(gca, 'FontSize', 12);
+    hold off;
+end
